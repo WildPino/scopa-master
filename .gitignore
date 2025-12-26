@@ -1,0 +1,6 @@
+#Salame piccante
+.venv/
+graphs/
+logs/
+models/
+__pycache__
