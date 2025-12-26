@@ -4,3 +4,4 @@ graphs/
 logs/
 models/
 __pycache__
+.vscode/
