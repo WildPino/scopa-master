@@ -45,7 +45,7 @@ class ScopaEnv(gym.Env):
 
         # --- OBSERVATION SPACE: 255 elementi ---
         # - 40 bit: Mano Player 0 (AI)
-        # - 40 bit: Tavolo
+        # - 40 bit: Tavolo 
         # - 40 bit: Carte prese da Player 0 (partita intera)
         # - 40 bit: Carte prese da Player 1 (partita intera)
         # - 40 bit: Carte giocate dall'avversario in questa mano

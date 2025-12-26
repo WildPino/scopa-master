@@ -6,7 +6,7 @@ class ScopaNet(nn.Module):
     def __init__(self, input_dim=255, action_dim=41):
         super(ScopaNet, self).__init__()
         
-        # 1. TRONCO COMUNE (Shared Backbone)
+        # 1. TRONCO COMUNE (Shared Backbone) 
         # La rete analizza lo stato del gioco. Questi layer sono usati sia
         # dall'Attore che dal Critico per capire "cosa sta succedendo".
         self.shared_layers = nn.Sequential( # The value a Sequential provides over manually calling a sequence of modules is that it allows treating the whole container as a single module

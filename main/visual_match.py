@@ -11,7 +11,7 @@ def format_card(card):
 
 def format_cards(cards):
     if not cards:
-        return "[]"
+        return "[]" 
     return "[" + ", ".join(format_card(c) for c in cards) + "]"
 
 def print_state(env, turn):

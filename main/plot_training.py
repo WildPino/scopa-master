@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from stable_baselines3.common.results_plotter import load_results, ts2xy
 
 LOG_DIR = "./logs/"
-GRAPH_DIR = "./graphs/"
+GRAPH_DIR = "./graphs/" 
 
 def moving_average(values, window_size):
     """Calcola la media mobile per lisciare il grafico."""

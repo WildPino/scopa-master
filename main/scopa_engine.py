@@ -9,7 +9,7 @@ class Suit(IntEnum):
     SPADE = 3
 
 class Card:
-    def __init__(self, rank, suit):
+    def __init__(self, rank, suit): 
         self.rank = rank  # 1-10
         self.suit = suit  # 0-3 (Suit Enum)
         self.index = (suit * 10) + (rank - 1)  # 0-39 (Indice univoco per l'AI)
