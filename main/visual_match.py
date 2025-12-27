@@ -57,12 +57,10 @@ def play_match():
             if card:
                 print(f"\n-> AI gioca: {format_card(card)}")
         else:
-            if action == 40:
-                print(f"\n-> AI conferma presa")
-            else:
-                card = next((c for c in env.engine.table if c.index == action), None)
-                if card:
-                    print(f"\n-> AI seleziona: {format_card(card)}")
+            # Fase 1: selezione carta dal tavolo (auto-conferma quando somma corretta)
+            card = next((c for c in env.engine.table if c.index == action), None)
+            if card:
+                print(f"\n-> AI seleziona: {format_card(card)}")
         
         obs, reward, done, _, info = env.step(action)
         

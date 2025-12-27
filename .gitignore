@@ -1,7 +1,4 @@
 #Salame piccante
 .venv/
-graphs/
-logs/
-models/
 __pycache__
 .vscode/

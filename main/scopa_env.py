@@ -2,20 +2,24 @@
 Scopa Environment - Sistema a Due Fasi
 
 Fase 0: Selezione carta da giocare (40 azioni, mask = mano)
-Fase 1: Selezione carte da prendere (iterativa, solo se multiple opzioni)
+Fase 1: Selezione carte da prendere (iterativa, auto-conferma quando somma = target)
 
 Observation Space: 255 elementi
-Action Space: 41 azioni (0-39 = carta, 40 = conferma presa)
+Action Space: 40 azioni (0-39 = indice carta)
 """
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import random
 import logging
+import os
 from itertools import combinations
 from scopa_engine import ScopaEngine, Suit
 
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Directory per salvare i dati di training Fase 1
+PHASE1_DATA_DIR = os.path.join(os.path.dirname(__file__), "training_material")
 
 
 class ScopaEnv(gym.Env):
@@ -29,7 +33,7 @@ class ScopaEnv(gym.Env):
         - 'mixed': Alterna casualmente tra le modalità
     """
     
-    def __init__(self, opponent_mode='random', model=None):
+    def __init__(self, opponent_mode='random', model=None, save_phase1_data=False):
         super(ScopaEnv, self).__init__()
         self.engine = ScopaEngine()
         
@@ -37,11 +41,15 @@ class ScopaEnv(gym.Env):
         self.opponent_mode = opponent_mode
         self.model = model  # Usato per self-play
         self.available_modes = ['random', 'self', 'heuristic']
+        
+        # --- FASE 1 DATA COLLECTION ---
+        self.save_phase1_data = save_phase1_data
+        self.phase1_buffer = []  # Lista di (obs, target_rank, current_sum, is_correct)
 
-        # --- ACTION SPACE: 41 azioni ---
+        # --- ACTION SPACE: 40 azioni ---
         # 0-39: Indice carta (giocare in Fase 0, prendere in Fase 1)
-        # 40: Conferma presa (solo Fase 1)
-        self.action_space = spaces.Discrete(41)
+        # Auto-conferma quando somma = target (nessun action "conferma")
+        self.action_space = spaces.Discrete(40)
 
         # --- OBSERVATION SPACE: 255 elementi ---
         # - 40 bit: Mano Player 0 (AI)
@@ -54,7 +62,7 @@ class ScopaEnv(gym.Env):
         # - 11: Statistiche normalizzate
         # - 1: Last capture player (0/1)
         # - 1: Capture mode (0 = Fase 0, 1 = Fase 1)
-        # - 1: Card played index (0-39, normalizzato)
+        # - 1: Card played index (0-39, normalizzato n/39)
         self.observation_space = spaces.Box(low=0, high=1, shape=(255,), dtype=np.float32)
         
         # Stato interno per le fasi
@@ -179,27 +187,33 @@ class ScopaEnv(gym.Env):
 
     def action_masks(self):
         """Ritorna la maschera delle azioni legali."""
-        mask = np.zeros(41, dtype=bool)
+        mask = np.zeros(40, dtype=bool)
         
         if self.phase == 0:
             # Fase 0: Mask per carte in mano
             for card in self.engine.hands[0]:
                 mask[card.index] = True
         else:
-            # Fase 1: Mask per carte sul tavolo che possono contribuire
+            # Fase 1: Mask INTELLIGENTE che evita vicoli ciechi
+            # Filtra solo le carte che possono portare a una presa valida
+            current_selected_indices = set(c.index for c in self.selected_captures)
             current_sum = sum(c.rank for c in self.selected_captures)
             needed = self.card_played.rank - current_sum
             
-            for card in self.engine.table:
-                if card not in self.selected_captures:
-                    if card.rank <= needed:
-                        mask[card.index] = True
+            # Trova tutte le carte che possono far parte di una combinazione valida
+            valid_next_cards = set()
+            for combo in self.valid_capture_options:
+                combo_indices = set(c.index for c in combo)
+                # Se la combo contiene tutte le carte già selezionate...
+                if current_selected_indices.issubset(combo_indices):
+                    # ...allora le carte rimanenti della combo sono valide
+                    remaining = combo_indices - current_selected_indices
+                    for card in combo:
+                        if card.index in remaining and card.rank <= needed:
+                            valid_next_cards.add(card.index)
             
-            # Azione "conferma" (40) disponibile se:
-            # 1. La somma è corretta (presa valida)
-            # 2. OPPURE non ci sono altre azioni valide (escape hatch - terminerà con penalità)
-            if current_sum == self.card_played.rank or not mask.any():
-                mask[40] = True
+            for idx in valid_next_cards:
+                mask[idx] = True
                 
         return mask
 
@@ -258,20 +272,33 @@ class ScopaEnv(gym.Env):
             return self._get_obs(), 0.0, False, False, {"phase": 1, "awaiting_capture": True}
 
     def _step_phase1(self, action):
-        """Fase 1: Selezione carte da prendere."""
-        if action == 40:
-            # Azione "conferma"
-            current_sum = sum(c.rank for c in self.selected_captures)
-            
-            if current_sum == self.card_played.rank:
-                # Presa valida!
-                self._execute_capture(0, self.card_played, self.selected_captures)
-                ai_move = (self.card_played, list(self.selected_captures))
-                reward = 0.0
-            else:
-                # Somma errata: TERMINA EPISODIO (policy deve essere precisa)
-                logging.warning(f"FASE 1 - Conferma con somma errata: {current_sum} != {self.card_played.rank}")
-                return self._get_obs(), -10.0, True, False, {"invalid_action": True, "phase": 1, "reason": "wrong_sum"}
+        """Fase 1: Selezione carte da prendere (solo auto-conferma)."""
+        # Selezione carta dal tavolo
+        table_card = next((c for c in self.engine.table if c.index == action and c not in self.selected_captures), None)
+        
+        if table_card is None:
+            # Mossa invalida: TERMINA EPISODIO
+            logging.warning(f"FASE 1 - MOSSA INVALIDA! Carta {action} non sul tavolo.")
+            return self._get_obs(), -10.0, True, False, {"invalid_action": True, "phase": 1, "reason": "card_not_on_table"}
+        
+        self.selected_captures.append(table_card)
+        current_sum = sum(c.rank for c in self.selected_captures)
+        
+        # --- SALVA DATI FASE 1 (quando somma raggiunta) ---
+        if self.save_phase1_data and current_sum == self.card_played.rank:
+            obs = self._get_obs()
+            self.phase1_buffer.append({
+                'observation': obs.copy(),
+                'target_rank': self.card_played.rank,
+                'current_sum': current_sum,
+                'is_correct': True,
+                'selected_indices': [c.index for c in self.selected_captures]
+            })
+        
+        if current_sum == self.card_played.rank:
+            # Somma raggiunta: AUTO-CONFERMA
+            self._execute_capture(0, self.card_played, self.selected_captures)
+            ai_move = (self.card_played, list(self.selected_captures))
             
             self.phase = 0
             self.card_played = None
@@ -280,42 +307,16 @@ class ScopaEnv(gym.Env):
             opp_move = self._do_opponent_turn()
             self._check_deal_new_hand()
             
-            return self._finish_step(ai_move, opp_move, extra_reward=reward)
+            return self._finish_step(ai_move, opp_move, extra_reward=0.0)
             
+        elif current_sum > self.card_played.rank:
+            # Somma superata: TERMINA EPISODIO (non dovrebbe succedere con mask)
+            logging.warning(f"FASE 1 - Somma superata: {current_sum} > {self.card_played.rank}")
+            return self._get_obs(), -10.0, True, False, {"invalid_action": True, "phase": 1, "reason": "sum_exceeded"}
+        
         else:
-            # Selezione carta dal tavolo
-            table_card = next((c for c in self.engine.table if c.index == action and c not in self.selected_captures), None)
-            
-            if table_card is None:
-                # Mossa invalida: TERMINA EPISODIO
-                logging.warning(f"FASE 1 - MOSSA INVALIDA! Carta {action} non sul tavolo.")
-                return self._get_obs(), -10.0, True, False, {"invalid_action": True, "phase": 1, "reason": "card_not_on_table"}
-            
-            self.selected_captures.append(table_card)
-            current_sum = sum(c.rank for c in self.selected_captures)
-            
-            if current_sum == self.card_played.rank:
-                # Somma raggiunta: auto-conferma
-                self._execute_capture(0, self.card_played, self.selected_captures)
-                ai_move = (self.card_played, list(self.selected_captures))
-                
-                self.phase = 0
-                self.card_played = None
-                self.selected_captures = []
-                
-                opp_move = self._do_opponent_turn()
-                self._check_deal_new_hand()
-                
-                return self._finish_step(ai_move, opp_move)
-                
-            elif current_sum > self.card_played.rank:
-                # Somma superata: TERMINA EPISODIO (non dovrebbe succedere con mask)
-                logging.warning(f"FASE 1 - Somma superata: {current_sum} > {self.card_played.rank}")
-                return self._get_obs(), -10.0, True, False, {"invalid_action": True, "phase": 1, "reason": "sum_exceeded"}
-            
-            else:
-                # Somma non ancora raggiunta: continua Fase 1
-                return self._get_obs(), 0.0, False, False, {"phase": 1, "selected_sum": current_sum}
+            # Somma non ancora raggiunta: continua Fase 1
+            return self._get_obs(), 0.0, False, False, {"phase": 1, "selected_sum": current_sum}
 
     def _execute_capture(self, player_index, card_played, cards_taken):
         """
@@ -409,7 +410,7 @@ class ScopaEnv(gym.Env):
         obs_opp = self._get_obs_for_opponent()
         
         # Maschera per le carte in mano dell'avversario
-        mask_phase0 = np.zeros(41, dtype=bool)
+        mask_phase0 = np.zeros(40, dtype=bool)
         for card in self.engine.hands[1]:
             mask_phase0[card.index] = True
         
@@ -449,14 +450,10 @@ class ScopaEnv(gym.Env):
                 needed = target_rank - current_sum
                 
                 # Maschera per le carte selezionabili
-                mask_phase1 = np.zeros(41, dtype=bool)
+                mask_phase1 = np.zeros(40, dtype=bool)
                 for card in available_cards:
                     if card not in selected and card.rank <= needed:
                         mask_phase1[card.index] = True
-                
-                # Aggiungi "conferma" se somma corretta
-                if current_sum == target_rank:
-                    mask_phase1[40] = True
                 
                 # Se nessuna carta valida, esci (non dovrebbe succedere)
                 if not mask_phase1.any():
@@ -467,10 +464,6 @@ class ScopaEnv(gym.Env):
                 
                 # Chiedi al modello
                 action, _ = self.model.predict(obs_phase1, action_masks=mask_phase1, deterministic=False)
-                
-                if action == 40:
-                    # Conferma
-                    break
                 
                 # Aggiungi la carta selezionata
                 selected_card = next((c for c in available_cards if c.index == action and c not in selected), None)
@@ -522,8 +515,8 @@ class ScopaEnv(gym.Env):
         captured_opp = self.captured_masks[0].astype(np.float32)
         
         # Carte giocate dall'avversario (P0 dal punto di vista di P1)
-        # Per semplicità, usiamo zero (P1 non traccia cosa ha tirato P0 in questa mano)
-        opponent_played = np.zeros(40, dtype=np.float32)
+        # Passiamo le stesse informazioni per self-play equo
+        opponent_played = self.opponent_played_this_hand.astype(np.float32)
         
         # Selected captures (fase 0, quindi vuoto)
         selected_obs = np.zeros(40)
@@ -558,12 +551,15 @@ class ScopaEnv(gym.Env):
         obs = self._get_obs_for_opponent()
         
         # Aggiorna per Fase 1
-        obs[240 + 12] = 1.0  # capture_mode = 1
-        obs[240 + 13] = card_played.index / 39.0  # card_played_idx
+        # Indici corretti: 0-39 hand, 40-79 table, 80-119 p0, 120-159 p1,
+        # 160-199 opp_played, 200-239 selected, 240 deck, 241-251 stats,
+        # 252 last_capture, 253 capture_mode, 254 card_played_idx
+        obs[253] = 1.0  # capture_mode
+        obs[254] = card_played.index / 39.0  # card_played_idx
         
         # Aggiorna selected_obs (posizione 200-239)
         for card in selected:
-            obs[200 + card.index] = 1.0  # Assumendo che selected_obs sia a 200
+            obs[200 + card.index] = 1.0
         
         return obs
     
@@ -610,3 +606,57 @@ class ScopaEnv(gym.Env):
         }
         
         return self._get_obs(), reward, terminated, False, info
+
+    # --- PHASE 1 DATA COLLECTION METHODS ---
+    
+    def save_phase1_buffer(self, filename=None):
+        """
+        Salva il buffer dei dati Fase 1 su file.
+        
+        Args:
+            filename: Nome del file (default: phase1_data.npz)
+        """
+        if not self.phase1_buffer:
+            logging.info("Nessun dato Fase 1 da salvare.")
+            return
+        
+        os.makedirs(PHASE1_DATA_DIR, exist_ok=True)
+        
+        if filename is None:
+            filename = "phase1_data.npz"
+        
+        filepath = os.path.join(PHASE1_DATA_DIR, filename)
+        
+        # Converti buffer in array numpy
+        observations = np.array([d['observation'] for d in self.phase1_buffer])
+        target_ranks = np.array([d['target_rank'] for d in self.phase1_buffer])
+        current_sums = np.array([d['current_sum'] for d in self.phase1_buffer])
+        is_correct = np.array([d['is_correct'] for d in self.phase1_buffer])
+        
+        # Carica dati esistenti e appendi
+        if os.path.exists(filepath):
+            existing = np.load(filepath)
+            observations = np.concatenate([existing['observations'], observations])
+            target_ranks = np.concatenate([existing['target_ranks'], target_ranks])
+            current_sums = np.concatenate([existing['current_sums'], current_sums])
+            is_correct = np.concatenate([existing['is_correct'], is_correct])
+        
+        np.savez(
+            filepath,
+            observations=observations,
+            target_ranks=target_ranks,
+            current_sums=current_sums,
+            is_correct=is_correct
+        )
+        
+        logging.info(f"Salvati {len(self.phase1_buffer)} campioni Fase 1 in {filepath} (totale: {len(observations)})")
+        self.phase1_buffer = []  # Svuota buffer
+    
+    def get_phase1_stats(self):
+        """Ritorna statistiche sui dati Fase 1 nel buffer."""
+        if not self.phase1_buffer:
+            return {"count": 0, "correct": 0, "wrong": 0}
+        
+        correct = sum(1 for d in self.phase1_buffer if d['is_correct'])
+        wrong = len(self.phase1_buffer) - correct
+        return {"count": len(self.phase1_buffer), "correct": correct, "wrong": wrong}
