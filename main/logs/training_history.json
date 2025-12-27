@@ -66,6 +66,28 @@
       "std_reward": 2.896767797575431,
       "win_rate_approx": 39.097092683662126,
       "mean_episode_length": 18.8485482260283
+    },
+    {
+      "timestamp": "2025-12-27T15:15:33.941939",
+      "episodes": 53178,
+      "total_timesteps": 1001371,
+      "mean_reward": -0.27964571815412387,
+      "max_reward": 10.0,
+      "min_reward": -9.0,
+      "std_reward": 2.8957022228547555,
+      "win_rate_approx": 39.65549663394637,
+      "mean_episode_length": 18.830550227537703
+    },
+    {
+      "timestamp": "2025-12-27T19:47:43.191516",
+      "episodes": 530395,
+      "total_timesteps": 10001435,
+      "mean_reward": -0.19973793116450947,
+      "max_reward": 9.0,
+      "min_reward": -11.0,
+      "std_reward": 2.910727456085929,
+      "win_rate_approx": 40.681001894814244,
+      "mean_episode_length": 18.85657858765637
     }
   ]
 }
