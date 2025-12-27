@@ -1,7 +1,9 @@
 """
 Visual Match - Visualizzazione partita Scopa con sistema a due fasi
 """
+import os
 import numpy as np
+from sb3_contrib import MaskablePPO
 from scopa_env import ScopaEnv
 from scopa_engine import Suit
 
@@ -29,12 +31,44 @@ def print_state(env, turn):
 
 def play_match():
     env = ScopaEnv()
-    obs, _ = env.reset()
+    obs, info = env.reset()
     
-    print("\n" + "="*50)
-    print("       NUOVA PARTITA DI SCOPA (Due Fasi)")
+    # Tentativo di caricamento modello
+    model_path = "./models/scopa_ai_latest.zip"
+    model = None
+    
+    if os.path.exists(model_path):
+        try:
+            model = MaskablePPO.load(model_path, env=env)
+            print("\n" + "="*50)
+            print("🤖 ZICHI: AI MODEL LOADED (vs AI)")
+            print(f"   Modello caricato da: {model_path}")
+            print("="*50)
+        except Exception as e:
+            print(f"⚠️ Errore caricamento modello: {e}")
+            model = None
+
+    if model is None:
+        print("\n" + "="*50)
+        print("🎲 MODE: RANDOM (Model not found)")
+        print("   Nessun modello trovato in ./models/scopa_ai_latest.zip")
+        print("   L'AI giocherà mosse casuali.")
+        print("="*50)
+    
+    print("\n       NUOVA PARTITA DI SCOPA (Due Fasi)")
     print("="*50)
-    
+
+    # Check se l'avversario ha giocato per primo
+    if info.get('opponent_move'):
+        print("\n⚡ OPPONENT STARTS (First Turn)")
+        opp_card, opp_taken = info['opponent_move']
+        print(f"   Plays: {format_card(opp_card)}")
+        if opp_taken:
+             print(f"   CAPTURES: {format_cards(opp_taken)}")
+        else:
+             print(f"   (Placed on table)")
+        print("-" * 30)
+
     turn = 0
     done = False
     
@@ -49,7 +83,10 @@ def play_match():
             print("ERRORE: Nessuna azione valida!")
             break
         
-        action = np.random.choice(valid_actions)
+        if model:
+            action, _ = model.predict(obs, action_masks=mask)
+        else:
+            action = np.random.choice(valid_actions)
         
         # Mostra l'azione scelta
         if env.phase == 0:
@@ -72,10 +109,12 @@ def play_match():
         
         if info.get('opponent_move'):
             opp_card, opp_taken = info['opponent_move']
+            print("\n⚡ OPPONENT plays")
+            print(f"   Card: {format_card(opp_card)}")
             if opp_taken:
-                print(f"   Avversario prende: {format_card(opp_card)} -> {format_cards(opp_taken)}")
+                print(f"   CAPTURES: {format_cards(opp_taken)}")
             else:
-                print(f"   Avversario cala: {format_card(opp_card)}")
+                print(f"   (Placed on table)")
         
         if reward != 0:
             print(f"   REWARD: {reward}")

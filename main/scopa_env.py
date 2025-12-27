@@ -94,7 +94,7 @@ class ScopaEnv(gym.Env):
         if random.random() < 0.5:
              # Inizia l'avversario
              opp_move = self._do_opponent_turn()
-             # Non serve tracciare opp_move nel reset info, l'observation sarà aggiornata
+             return self._get_obs(), {"opponent_move": opp_move}
              
         return self._get_obs(), {}
 
