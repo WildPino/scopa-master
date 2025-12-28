@@ -1,4 +1,4 @@
-torch
+torch #U are alone on this one, choose the correct version for your system
 numpy
 stable-baselines3
 sb3-contrib

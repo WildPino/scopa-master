@@ -80,7 +80,7 @@ def train(total_timesteps=1000000, opponent_mode='random', continue_from=None, u
     # 2. Definisci o carica il modello
     if continue_from:
         print(f"Caricamento modello da: {continue_from}")
-        model = MaskablePPO.load(continue_from, env=env, ent_coef=0.05, learning_rate=0.0003, device=device)
+        model = MaskablePPO.load(continue_from, env=env, ent_coef=0.07, learning_rate=0.0003, device=device)
     else:
         model = MaskablePPO(
             "MlpPolicy", 
