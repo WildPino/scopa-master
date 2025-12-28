@@ -1,0 +1,6 @@
+[console_scripts]
+scopa-play = scopa.gui:main
+scopa-plot = scopa.training.visualization:main
+scopa-train = scopa.training.train:main
+scopa-train-parallel = scopa.training.train_parallel:main
+scopa-visual = scopa.cli.visual_match:main

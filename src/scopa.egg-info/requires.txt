@@ -1,0 +1,13 @@
+torch
+numpy
+stable-baselines3
+sb3-contrib
+gymnasium
+pygame
+matplotlib
+
+[dev]
+pytest
+pytest-cov
+black
+ruff
