@@ -18,10 +18,11 @@ if TYPE_CHECKING:
 
 class SelfPlayCallback(BaseCallback):
     """
-    Callback per aggiornare il modello usato per self-play in VecEnv.
+    Callback per aggiornare i pesi della policy per self-play in VecEnv.
     
-    Con SubprocVecEnv gli ambienti girano in processi separati,
-    quindi usa env_method() per comunicare con i worker.
+    Con SubprocVecEnv gli ambienti girano in processi separati.
+    Non possiamo inviare l'intero modello (non serializzabile), quindi
+    inviamo solo lo state_dict della policy (tensori serializzabili).
     
     Args:
         update_freq: Frequenza di aggiornamento in timesteps
@@ -35,11 +36,16 @@ class SelfPlayCallback(BaseCallback):
     
     def _on_step(self) -> bool:
         if self.num_timesteps >= self.last_update + self.update_freq:
-            self.training_env.env_method("set_model", self.model)
+            # Estrai lo state_dict della policy (serializzabile)
+            state_dict = self.model.policy.state_dict()
+            # Converti tensori a CPU per serializzazione
+            state_dict_cpu = {k: v.cpu() for k, v in state_dict.items()}
+            
+            self.training_env.env_method("update_model_weights", state_dict_cpu)
             self.last_update = self.num_timesteps
             
             if self.verbose > 0:
-                print(f"[SelfPlay] Modello aggiornato a step {self.num_timesteps:,}")
+                print(f"[SelfPlay] Pesi modello aggiornati a step {self.num_timesteps:,}")
         
         return True
 

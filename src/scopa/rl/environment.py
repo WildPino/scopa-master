@@ -163,6 +163,47 @@ class ScopaEnv(gym.Env):
         """Imposta il modello per self-play."""
         self.model = model
     
+    def update_model_weights(self, state_dict: Dict[str, Any]) -> None:
+        """
+        Aggiorna i pesi della policy del modello locale.
+        
+        Questa funzione è compatibile con SubprocVecEnv perché riceve
+        solo lo state_dict (tensori serializzabili) invece del modello intero.
+        
+        Se il modello non esiste, viene creato lazily alla prima chiamata.
+        
+        Args:
+            state_dict: Dizionario con i pesi della policy
+        """
+        if self.model is None:
+            # Crea modello locale per self-play (lazy initialization)
+            self._create_local_model()
+        
+        if self.model is not None and hasattr(self.model, 'policy'):
+            self.model.policy.load_state_dict(state_dict)
+    
+    def _create_local_model(self) -> None:
+        """Crea un modello locale per self-play in ambienti subprocess."""
+        try:
+            from sb3_contrib import MaskablePPO
+            from scopa.config import NETWORK_ARCH
+            
+            # Crea un ambiente dummy per inizializzare il modello
+            policy_kwargs = dict(
+                net_arch=dict(pi=NETWORK_ARCH["pi"], vf=NETWORK_ARCH["vf"])
+            )
+            
+            self.model = MaskablePPO(
+                "MlpPolicy",
+                self,  # Usa self come environment
+                verbose=0,
+                device="cpu",  # Sempre CPU per inferenza locale
+                policy_kwargs=policy_kwargs,
+            )
+        except Exception as e:
+            logger.warning(f"Impossibile creare modello locale: {e}")
+            self.model = None
+    
     def render(self) -> Optional[str]:
         """Render testuale dello stato."""
         if self.render_mode == "ansi":
