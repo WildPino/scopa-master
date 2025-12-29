@@ -1,11 +1,22 @@
 """
-Scopa Training Module - Training scripts and utilities.
+Scopa Training Module - Training utilities.
+
+Per il training attivo, usare:
+    python scripts/train_recurrent.py
 
 Exports:
-- train (function): Basic training
-- train_parallel (function): Optimized parallel training
-- plot_results (function): Training visualization
+- RecurrentRolloutBuffer: Buffer per policy ricorrenti
+- Callbacks: SelfPlayCallback, BenchmarkCallback, ValueLossLoggerCallback
+- plot_results: Visualizzazione risultati training
 """
 from scopa.training.callbacks import SelfPlayCallback, BenchmarkCallback, ValueLossLoggerCallback
+from scopa.training.rollout_buffer import RecurrentRolloutBuffer
+from scopa.training.visualization import plot_results
 
-__all__ = ["SelfPlayCallback", "BenchmarkCallback", "ValueLossLoggerCallback"]
+__all__ = [
+    "RecurrentRolloutBuffer",
+    "SelfPlayCallback",
+    "BenchmarkCallback",
+    "ValueLossLoggerCallback",
+    "plot_results",
+]

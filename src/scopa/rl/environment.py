@@ -29,7 +29,10 @@ import numpy as np
 from gymnasium import spaces
 
 from scopa.game import Card, Suit, ScopaEngine
-from scopa.config import OBSERVATION_DIM, ACTION_DIM, HISTORY_BUFFER_SIZE
+from scopa.config import (
+    OBSERVATION_DIM, ACTION_DIM, HISTORY_BUFFER_SIZE,
+    USE_REWARD_SHAPING, REWARD_SHAPING_CONFIG
+)
 
 # Type aliases
 ObsType = np.ndarray
@@ -90,6 +93,10 @@ class ScopaEnv(gym.Env):
         self.history = np.zeros(HISTORY_BUFFER_SIZE, dtype=np.float32)
         self.history_idx = 0
         self.starter_player = 0  # 0 = AI inizia, 1 = Avversario inizia
+        
+        # Contatori carte giocate (40 carte totali, 20 per giocatore)
+        self.p0_cards_played = 0
+        self.p1_cards_played = 0
     
     def reset(
         self,
@@ -113,12 +120,18 @@ class ScopaEnv(gym.Env):
         self.history = np.zeros(HISTORY_BUFFER_SIZE, dtype=np.float32)
         self.history_idx = 0
         
+        # Reset contatori carte giocate
+        self.p0_cards_played = 0
+        self.p1_cards_played = 0
+        
         # 50% chance che l'avversario inizi
         info: InfoDict = {}
         if random.random() < 0.5:
             self.starter_player = 1  # Avversario inizia
-            opp_move = self._do_opponent_turn()
-            info["opponent_move"] = opp_move
+            opp_move = self._do_opponent_turn_internal()  # Prima mossa P1
+            if opp_move:
+                self.p1_cards_played += 1
+                info["opponent_move"] = opp_move
         else:
             self.starter_player = 0  # AI inizia
         
@@ -324,6 +337,9 @@ class ScopaEnv(gym.Env):
         # Traccia le carte giocate dall'AI questa mano (per self-play swap)
         self._ai_played_this_hand[card.index] = 1
         
+        # Incrementa contatore carte giocate da P0
+        self.p0_cards_played += 1
+        
         if len(self.valid_capture_options) == 0:
             # Calata sul tavolo
             self.engine.hands[0].remove(card)
@@ -411,7 +427,39 @@ class ScopaEnv(gym.Env):
             self.engine.scope[player] += 1
     
     def _do_opponent_turn(self) -> Optional[Tuple[Card, List[Card]]]:
-        """Esegue il turno dell'avversario."""
+        """
+        Wrapper che bilancia i turni per assicurare equità.
+        
+        Regola chiave:
+        - Quando P1 inizia, P0 deve finire per ultimo
+        - Quando P0 inizia, P1 finisce per ultimo (comportamento naturale)
+        
+        Implementazione:
+        - Se P1 ha iniziato E P0 ha appena giocato la sua 18a carta,
+          P1 gioca la sua ultima carta come "turno silenzioso" (non conta come ultima presa)
+          e il gioco termina.
+        """
+        # Se P1 ha iniziato e P0 ha già giocato tutte le sue carte,
+        # P1 deve giocare la sua ultima carta ma non deve fare l'ultima presa
+        if self.starter_player == 1 and self.p0_cards_played >= 18:
+            # P1 ha ancora una carta: calala sul tavolo (non può prendere)
+            if self.engine.hands[1]:
+                card = self.engine.hands[1][0]
+                self.engine.hands[1].remove(card)
+                self.engine.table.append(card)
+                # Non aggiorniamo last_capture_player perché è una calata
+                self.p1_cards_played += 1
+                return (card, [])  # Ritorna la mossa (calata)
+            return None
+        
+        opp_move = self._do_opponent_turn_internal()
+        if opp_move:
+            self.p1_cards_played += 1
+        
+        return opp_move
+    
+    def _do_opponent_turn_internal(self) -> Optional[Tuple[Card, List[Card]]]:
+        """Esegue il turno effettivo dell'avversario."""
         if not self.engine.hands[1]:
             return None
         
@@ -619,26 +667,80 @@ class ScopaEnv(gym.Env):
             self._opponent_played_this_hand = np.zeros(40, dtype=np.int8)
             self._ai_played_this_hand = np.zeros(40, dtype=np.int8)
     
+    def _calculate_step_reward(self, ai_move: Tuple[Card, List[Card]]) -> float:
+        """Calcola reward immediato per la mossa (Reward Shaping).
+        
+        Usato solo quando USE_REWARD_SHAPING=True.
+        """
+        cfg = REWARD_SHAPING_CONFIG
+        card_played, taken = ai_move
+        reward = 0.0
+        
+        # 1. Incentivo base a prendere carte (invece di calare)
+        if taken:
+            reward += cfg["capture_base"]
+            
+            # 2. Bonus per carte importanti prese
+            for card in taken:
+                # Settebello
+                if card.rank == 7 and card.suit == Suit.DENARI:
+                    reward += cfg["settebello"]
+                # Denari
+                elif card.suit == Suit.DENARI:
+                    reward += cfg["denari"]
+                # Sette (per primiera)
+                elif card.rank == 7:
+                    reward += cfg["sette"]
+            
+            # 3. Bonus Scopa
+            # Tavolo vuoto dopo presa + mazzo ancora presente = scopa
+            if not self.engine.table and self.engine.deck:
+                reward += cfg["scopa"]
+                
+        else:
+            # Penalità leggera per calata
+            reward += cfg["calata_penalty"]
+            
+        return reward
+
     def _finish_step(
         self,
         ai_move: Tuple[Card, List[Card]],
         opp_move: Optional[Tuple[Card, List[Card]]],
         extra_reward: float = 0.0
     ) -> Tuple[ObsType, float, bool, bool, InfoDict]:
-        """Conclude lo step e calcola reward."""
+        """Conclude lo step e calcola reward (shaped o sparse)."""
         terminated = False
-        reward = extra_reward
+        cfg = REWARD_SHAPING_CONFIG
+        
+        # Reward intermedio (solo se abilitato)
+        step_reward = 0.0
+        if USE_REWARD_SHAPING:
+            step_reward = self._calculate_step_reward(ai_move)
+        
+        reward = extra_reward + step_reward
         
         if self.engine.is_game_over():
             terminated = True
             self.engine.finalize_game()
             scores = self.engine.calculate_score()
-            reward += float(scores[0]) - float(scores[1])
+            
+            # Differenza punti (sempre applicata, con moltiplicatore se shaping attivo)
+            final_score_diff = float(scores[0]) - float(scores[1])
+            if USE_REWARD_SHAPING:
+                reward += final_score_diff * cfg["score_multiplier"]
+                # Bonus vittoria secca
+                if scores[0] > scores[1]:
+                    reward += cfg["win_bonus"]
+            else:
+                # Solo differenza punti pura (sparse reward)
+                reward += final_score_diff
         
         info = {
             "ai_move": ai_move,
             "opponent_move": opp_move,
             "phase": self.phase,
+            "step_reward": step_reward,
         }
         
         return self._get_obs(), reward, terminated, False, info

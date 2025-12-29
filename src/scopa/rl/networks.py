@@ -1,13 +1,14 @@
 """
-ScopaNet - Architettura Neurale Custom per Scopa AI.
+Networks - Architetture neurali legacy per Scopa AI.
 
-NOTA: Questo file è un LABORATORIO per future implementazioni custom.
-Attualmente il training usa MlpPolicy di SB3 con policy_kwargs in train_parallel.py.
+NOTA: Questo modulo contiene componenti legacy mantenuti per compatibilità.
+Il modello attivo usa MaskableRecurrentPolicy da policies.py.
 
-Questo modello può essere usato come base per:
-- Layer convoluzionali per analizzare sequenze di carte
-- Attention mechanisms per focus su carte strategiche
-- Architetture più complesse che richiedono forward() custom
+Per nuovi sviluppi, usare:
+- scopa.rl.policies.MaskableRecurrentPolicy
+
+Componenti legacy (non più utilizzati attivamente):
+- ScopaNet: Rete MLP base Actor-Critic (per vecchi modelli MaskablePPO)
 """
 from __future__ import annotations
 
@@ -22,14 +23,15 @@ from scopa.config import OBSERVATION_DIM, ACTION_DIM
 
 class ScopaNet(nn.Module):
     """
-    Rete neurale Actor-Critic per Scopa.
+    [LEGACY] Rete neurale Actor-Critic MLP per Scopa.
+    
+    Mantenuta per compatibilità con vecchi modelli MaskablePPO.
+    Per nuovi training, usare MaskableRecurrentPolicy.
     
     Architettura:
     - Shared backbone (256-256-128)
     - Actor head (policy logits)
     - Critic head (value estimate)
-    
-    Supporta action masking per azioni illegali.
     """
     
     def __init__(
@@ -38,17 +40,9 @@ class ScopaNet(nn.Module):
         action_dim: int = ACTION_DIM,
         hidden_sizes: Tuple[int, ...] = (256, 256, 128)
     ):
-        """
-        Inizializza la rete.
-        
-        Args:
-            input_dim: Dimensione dell'osservazione (default 255)
-            action_dim: Numero di azioni possibili (default 40)
-            hidden_sizes: Dimensioni dei layer nascosti
-        """
         super().__init__()
         
-        # Tronco comune (Shared Backbone)
+        # Shared backbone
         layers = []
         prev_size = input_dim
         for size in hidden_sizes:
@@ -72,7 +66,7 @@ class ScopaNet(nn.Module):
         mask: Optional[Tensor] = None
     ) -> Tuple[Tensor, Tensor]:
         """
-        Forward pass della rete.
+        Forward pass.
         
         Args:
             x: Osservazione [batch, input_dim]
@@ -81,22 +75,14 @@ class ScopaNet(nn.Module):
         Returns:
             Tuple (action_probs, value)
         """
-        # Shared backbone
         hidden = self.shared_layers(x)
-        
-        # Policy logits
         policy_logits = self.actor(hidden)
         
-        # Action masking
         if mask is not None:
-            # Imposta -inf per azioni illegali
             fill_value = torch.finfo(policy_logits.dtype).min
             policy_logits = policy_logits.masked_fill(~mask, fill_value)
         
-        # Probabilità (softmax)
         probs = F.softmax(policy_logits, dim=-1)
-        
-        # Value estimate
         value = self.critic(hidden)
         
         return probs, value

@@ -138,3 +138,152 @@ class BenchmarkCallback(BaseCallback):
                 )
         
         return True
+
+
+class LeagueManagerCallback(BaseCallback):
+    """
+    Callback per gestire pool di avversari e self-play diversificato.
+    
+    Pool di avversari:
+    - p(latest) = 0.6
+    - p(snapshot_pool) = 0.25
+    - p(heuristic) = 0.1
+    - p(random) = 0.05
+    
+    Features:
+    - Salva snapshot periodici del modello
+    - Valuta periodicamente su set fisso di avversari
+    - Supporta best-response training step
+    
+    Args:
+        snapshot_dir: Directory per salvare gli snapshot
+        snapshot_freq: Frequenza salvataggio snapshot (timesteps)
+        eval_freq: Frequenza valutazione (timesteps)
+        pool_sampling: Dict con probabilità per tipo avversario
+        max_snapshots: Numero massimo di snapshot da mantenere
+        verbose: Livello di verbosità
+    """
+    
+    DEFAULT_SAMPLING = {
+        "latest": 0.6,
+        "snapshot": 0.25,
+        "heuristic": 0.1,
+        "random": 0.05,
+    }
+    
+    def __init__(
+        self,
+        snapshot_dir: str,
+        snapshot_freq: int = 50_000,
+        eval_freq: int = 100_000,
+        pool_sampling: dict = None,
+        max_snapshots: int = 10,
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        self.snapshot_dir = snapshot_dir
+        self.snapshot_freq = snapshot_freq
+        self.eval_freq = eval_freq
+        self.pool_sampling = pool_sampling or self.DEFAULT_SAMPLING
+        self.max_snapshots = max_snapshots
+        
+        self.last_snapshot = 0
+        self.last_eval = 0
+        self.snapshot_paths: list = []
+        self.eval_history: list = []
+    
+    def _on_training_start(self) -> None:
+        from pathlib import Path
+        
+        # Crea directory snapshot
+        snapshot_path = Path(self.snapshot_dir)
+        snapshot_path.mkdir(parents=True, exist_ok=True)
+        
+        # Cerca snapshot esistenti
+        existing = list(snapshot_path.glob("snapshot_*.zip"))
+        self.snapshot_paths = sorted([str(p) for p in existing])
+        
+        if self.verbose > 0:
+            print(f"[League] Inizializzato con {len(self.snapshot_paths)} snapshot esistenti")
+    
+    def _on_step(self) -> bool:
+        # Salva snapshot periodicamente
+        if self.num_timesteps >= self.last_snapshot + self.snapshot_freq:
+            self._save_snapshot()
+            self.last_snapshot = self.num_timesteps
+        
+        # Valuta periodicamente
+        if self.num_timesteps >= self.last_eval + self.eval_freq:
+            metrics = self._run_evaluation()
+            self.eval_history.append({
+                "timesteps": self.num_timesteps,
+                "metrics": metrics,
+            })
+            self.last_eval = self.num_timesteps
+        
+        return True
+    
+    def _save_snapshot(self) -> None:
+        """Salva checkpoint corrente nel pool."""
+        from pathlib import Path
+        
+        snapshot_name = f"snapshot_{self.num_timesteps}.zip"
+        snapshot_path = Path(self.snapshot_dir) / snapshot_name
+        
+        self.model.save(str(snapshot_path)[:-4])  # Rimuovi .zip (SB3 lo aggiunge)
+        self.snapshot_paths.append(str(snapshot_path))
+        
+        # Limita numero snapshot
+        while len(self.snapshot_paths) > self.max_snapshots:
+            old_path = self.snapshot_paths.pop(0)
+            try:
+                Path(old_path).unlink()
+            except OSError:
+                pass
+        
+        if self.verbose > 0:
+            print(f"[League] Snapshot salvato: {snapshot_name}")
+    
+    def _sample_opponent(self) -> str:
+        """Sceglie tipo avversario dal pool secondo distribuzione."""
+        import random
+        
+        types = list(self.pool_sampling.keys())
+        probs = list(self.pool_sampling.values())
+        
+        return random.choices(types, weights=probs, k=1)[0]
+    
+    def _run_evaluation(self) -> dict:
+        """Valuta contro pool fisso e ritorna metriche."""
+        from pathlib import Path
+        
+        metrics = {
+            "timesteps": self.num_timesteps,
+            "vs_random": 0.0,
+            "vs_heuristic": 0.0,
+        }
+        
+        # Evaluation semplificata - usa eval_match se disponibile
+        try:
+            # Import qui per evitare circular imports
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "scripts"))
+            
+            # Per ora, riporta solo placeholder
+            # In produzione: chiamare eval_match.evaluate_model()
+            if self.verbose > 0:
+                print(f"[League] Valutazione a step {self.num_timesteps:,}")
+        except Exception as e:
+            if self.verbose > 0:
+                print(f"[League] Errore valutazione: {e}")
+        
+        return metrics
+    
+    def get_snapshot_path(self) -> str:
+        """Ritorna path di uno snapshot casuale dal pool."""
+        import random
+        
+        if not self.snapshot_paths:
+            return None
+        
+        return random.choice(self.snapshot_paths)
