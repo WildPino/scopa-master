@@ -50,6 +50,60 @@ class SelfPlayCallback(BaseCallback):
         return True
 
 
+class ValueLossLoggerCallback(BaseCallback):
+    """
+    Callback per loggare la value_loss in un CSV.
+    
+    Questo permette alla visualization di mostrare la convergenza
+    della value_loss (il "logaritmo rovesciato" che indica un buon training).
+    
+    Args:
+        log_dir: Directory dove salvare il CSV
+        log_interval: Intervallo tra i log (in n_updates)
+        verbose: Livello di verbosità
+    """
+    
+    def __init__(self, log_dir: str, log_interval: int = 10, verbose: int = 0):
+        super().__init__(verbose)
+        self.log_dir = log_dir
+        self.log_interval = log_interval
+        self.csv_path = None
+        self.last_n_updates = 0
+    
+    def _on_training_start(self) -> None:
+        from pathlib import Path
+        self.csv_path = Path(self.log_dir) / "value_loss.csv"
+        # Scrivi header se file non esiste
+        if not self.csv_path.exists():
+            self.csv_path.write_text("timesteps,n_updates,value_loss\n")
+    
+    def _on_step(self) -> bool:
+        # Leggi value_loss dal logger del modello
+        if hasattr(self.model, 'logger') and self.model.logger is not None:
+            # Ottieni n_updates corrente
+            n_updates = getattr(self.model, '_n_updates', 0)
+            
+            # Logga solo se ci sono stati nuovi update
+            if n_updates > self.last_n_updates and n_updates % self.log_interval == 0:
+                # Prova a leggere value_loss dai name_to_value del logger
+                logger = self.model.logger
+                value_loss = None
+                
+                if hasattr(logger, 'name_to_value'):
+                    value_loss = logger.name_to_value.get('train/value_loss')
+                
+                if value_loss is not None:
+                    with open(self.csv_path, 'a') as f:
+                        f.write(f"{self.num_timesteps},{n_updates},{value_loss}\n")
+                    
+                    if self.verbose > 0:
+                        print(f"[ValueLoss] Step {self.num_timesteps:,}: {value_loss:.4f}")
+                
+                self.last_n_updates = n_updates
+        
+        return True
+
+
 class BenchmarkCallback(BaseCallback):
     """
     Callback per misurare steps/s durante il training.

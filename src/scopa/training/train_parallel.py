@@ -32,7 +32,7 @@ from scopa.config import (
     DEFAULT_HYPERPARAMS, NETWORK_ARCH, OPPONENT_MODES,
     ensure_dirs
 )
-from scopa.training.callbacks import SelfPlayCallback, BenchmarkCallback
+from scopa.training.callbacks import SelfPlayCallback, BenchmarkCallback, ValueLossLoggerCallback
 
 
 def linear_schedule(
@@ -57,7 +57,7 @@ def mask_fn(env: ScopaEnv) -> np.ndarray:
 def make_env(
     opponent_mode: str,
     rank: int = 0,
-    log_dir: Optional[str] = None
+    log_filename: Optional[str] = None
 ) -> Callable[[], ScopaEnv]:
     """Factory function per creare ambienti compatibili con SubprocVecEnv."""
     def _init() -> ScopaEnv:
@@ -65,8 +65,9 @@ def make_env(
         env.reset(seed=rank)
         env = ActionMasker(env, mask_fn)
         
-        if log_dir is not None and rank == 0:
-            env = Monitor(env, log_dir)
+        if log_filename is not None and rank == 0:
+            # Monitor accetta il path completo senza estensione, aggiunge .monitor.csv
+            env = Monitor(env, log_filename)
         
         return env
     
@@ -77,10 +78,10 @@ def make_vec_env(
     opponent_mode: str,
     n_envs: int = 8,
     use_subproc: bool = True,
-    log_dir: Optional[str] = None
+    log_filename: Optional[str] = None
 ) -> SubprocVecEnv | DummyVecEnv:
     """Crea ambiente vettorizzato con N copie parallele."""
-    env_fns = [make_env(opponent_mode, rank=i, log_dir=log_dir) for i in range(n_envs)]
+    env_fns = [make_env(opponent_mode, rank=i, log_filename=log_filename) for i in range(n_envs)]
     
     if use_subproc and n_envs > 1:
         start_method = "spawn" if platform.system() == "Windows" else "forkserver"
@@ -118,12 +119,16 @@ def train(
     
     ensure_dirs()
     
+    # Genera filename unico per i log di questa sessione
+    session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = str(LOGS_DIR / f"monitor_{session_timestamp}")
+    
     # Crea ambiente vettorizzato
     vec_env = make_vec_env(
         opponent_mode=opponent_mode,
         n_envs=n_envs,
         use_subproc=n_envs > 1,
-        log_dir=str(LOGS_DIR)
+        log_filename=log_filename
     )
     
     # Hyperparameters ottimizzati
@@ -140,7 +145,7 @@ def train(
             continue_from,
             env=vec_env,
             ent_coef=hp["ent_coef"],
-            learning_rate=hp["learning_rate"],
+            learning_rate=linear_schedule(hp["learning_rate"], hp["learning_rate_final"]),
             device=device
         )
     else:
@@ -166,6 +171,8 @@ def train(
     
     # Setup callbacks
     callbacks = []
+    # ValueLossLogger sempre attivo per il grafico di convergenza
+    callbacks.append(ValueLossLoggerCallback(log_dir=str(LOGS_DIR), log_interval=10, verbose=0))
     if benchmark:
         callbacks.append(BenchmarkCallback(log_interval=5000, verbose=1))
     if opponent_mode in ["self", "mixed"]:

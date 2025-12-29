@@ -17,7 +17,6 @@ from typing import Dict, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
-from stable_baselines3.common.results_plotter import load_results, ts2xy
 
 from scopa.config import LOGS_DIR, GRAPHS_DIR, ensure_dirs
 
@@ -115,10 +114,37 @@ def plot_results() -> None:
     backup_old_graphs()
     
     try:
-        results = load_results(str(LOGS_DIR))
-        x, y = ts2xy(results, "timesteps")
-        x, y = np.array(x), np.array(y)
-        episode_lengths = np.array(results["l"].values) if "l" in results else np.array([])
+        # Cerca tutti i file monitor (sia vecchio formato che nuovo con timestamp)
+        import pandas as pd
+        from pathlib import Path
+        
+        monitor_files = list(Path(LOGS_DIR).glob("*.monitor.csv")) + list(Path(LOGS_DIR).glob("monitor.csv"))
+        
+        if not monitor_files:
+            print("❌ Nessun file monitor trovato.")
+            return
+        
+        all_data = []
+        for mf in monitor_files:
+            try:
+                # Leggi il file, skippa l'header JSON (prima riga)
+                df = pd.read_csv(mf, skiprows=1)
+                if len(df) > 0:
+                    all_data.append(df)
+            except Exception as e:
+                print(f"⚠️ Errore leggendo {mf.name}: {e}")
+        
+        if not all_data:
+            print("❌ Nessun dato valido nei file monitor.")
+            return
+        
+        # Unisci tutti i dati
+        results = pd.concat(all_data, ignore_index=True)
+        
+        # Calcola timesteps cumulativi
+        episode_lengths = results["l"].values
+        x = np.cumsum(episode_lengths)
+        y = results["r"].values
     except Exception as e:
         print(f"❌ Errore nel caricamento dei log: {e}")
         return
@@ -127,7 +153,8 @@ def plot_results() -> None:
         print("❌ Nessun dato trovato nei log.")
         return
     
-    print(f"📊 Trovati {len(x)} episodi completati")
+    print(f"📊 Trovati {len(x):,} episodi da {len(monitor_files)} file monitor")
+    print(f"   Timesteps totali: {x[-1]:,}")
     print(f"   Aggregazione in {N_BINS} bin per grafici leggibili")
     
     # Aggiorna storico
@@ -260,6 +287,84 @@ def plot_results() -> None:
     plt.tight_layout()
     fig2.savefig(GRAPHS_DIR / "performance_analysis.png", dpi=150)
     plt.close(fig2)
+    
+    # === FIGURA VALUE LOSS (SINGOLA) ===
+    # Leggi il CSV della value_loss se esiste
+    value_loss_file = LOGS_DIR / "value_loss.csv"
+    if value_loss_file.exists():
+        try:
+            import pandas as pd
+            df_vl = pd.read_csv(value_loss_file)
+            
+            if len(df_vl) > 10:  # Servono abbastanza dati
+                fig_vl, ax_vl = plt.subplots(figsize=(12, 6))
+                
+                timesteps_vl = df_vl["timesteps"].values
+                value_loss = df_vl["value_loss"].values
+                
+                # Aggregazione in bin per visualizzazione pulita
+                n_bins_vl = min(100, len(value_loss) // 5 + 1)
+                if n_bins_vl > 2:
+                    x_bin_vl, y_mean_vl, y_std_vl, y_p25_vl, y_p75_vl = bin_data(
+                        timesteps_vl, value_loss, n_bins_vl
+                    )
+                else:
+                    x_bin_vl = timesteps_vl
+                    y_mean_vl = value_loss
+                    y_std_vl = np.zeros_like(value_loss)
+                    y_p25_vl = value_loss
+                    y_p75_vl = value_loss
+                
+                # Grafico principale con banda di confidenza
+                ax_vl.fill_between(
+                    x_bin_vl, y_p25_vl, y_p75_vl, 
+                    alpha=0.2, color="red", label="25°-75° percentile"
+                )
+                ax_vl.plot(x_bin_vl, y_mean_vl, color="darkred", linewidth=2, label="Value Loss Media")
+                
+                # Media mobile per vedere il trend
+                if len(y_mean_vl) > 10:
+                    ma = moving_average(y_mean_vl, min(20, len(y_mean_vl) // 5))
+                    ma_x = x_bin_vl[len(x_bin_vl) - len(ma):]
+                    ax_vl.plot(ma_x, ma, color="blue", linewidth=2.5, linestyle="--", 
+                              alpha=0.8, label="Media Mobile (trend)")
+                
+                # Linea target (value_loss ideale)
+                ax_vl.axhline(1.0, color="green", linestyle=":", alpha=0.7, linewidth=2, 
+                             label="Target ideale (~1.0)")
+                
+                # Annotazione per indicare la convergenza
+                current_vl = y_mean_vl[-1]
+                initial_vl = y_mean_vl[0]
+                reduction = (initial_vl - current_vl) / initial_vl * 100 if initial_vl > 0 else 0
+                
+                convergence_emoji = "✅" if current_vl < 3.0 else "🔄" if current_vl < 5.0 else "⚠️"
+                ax_vl.annotate(
+                    f"{convergence_emoji} Attuale: {current_vl:.2f}\nRiduzione: {reduction:.1f}%",
+                    xy=(timesteps_vl[-1], current_vl),
+                    xytext=(0.02, 0.15), textcoords="axes fraction",
+                    fontsize=10, fontweight="bold",
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="gray", alpha=0.9),
+                    arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=-0.2"),
+                    ha="left"
+                )
+                
+                ax_vl.set_xlabel("Timesteps", fontsize=11)
+                ax_vl.set_ylabel("Value Loss", fontsize=11)
+                ax_vl.set_title("📉 Value Loss Convergence", fontsize=12, fontweight="bold")
+                ax_vl.legend(loc="upper right", fontsize=9)
+                ax_vl.grid(True, alpha=0.3)
+                ax_vl.set_ylim(bottom=0)  # Non mostrare valori negativi
+                
+                plt.tight_layout()
+                fig_vl.savefig(GRAPHS_DIR / "value_loss.png", dpi=150)
+                plt.close(fig_vl)
+                print("✅ Grafico Value Loss salvato!")
+        except Exception as e:
+            print(f"⚠️ Impossibile creare grafico Value Loss: {e}")
+    else:
+        print("ℹ️ Nessun dato value_loss.csv trovato - avvia un training per generarlo")
+    
     
     # === FIGURA 3: STORICO SESSIONI ===
     if len(history["sessions"]) > 1:

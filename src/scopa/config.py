@@ -48,7 +48,7 @@ DEFAULT_HYPERPARAMS: Dict[str, Any] = {
     "n_steps": 2048,
     "batch_size": 1024,
     "n_epochs": 10,
-    "ent_coef": 0.07,
+    "ent_coef": 0.01, # Started with 0.07
     "clip_range": 0.2,
 }
 
